@@ -1,71 +1,60 @@
 """
-GUI Frontend for Client (manual credential entry + kill connection)
+GUI Frontend for Client: two-step flow (Enter -> get key -> paste key -> Login)
+Now: encryption key is shown ONLY in console, NOT auto-pasted.
 """
 
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
 import threading
-from client3 import connect_to_server, login, receive_alerts, receive_login_pair
-
+from client3 import connect_to_server, enter_credentials, confirm_key_and_activate, receive_alerts
 
 class GUIClient(tk.Tk):
     def __init__(self):
         super().__init__()
-
         self.title("Real-Time Alert Monitoring System - Client")
-        self.geometry("750x580")
-        self.resizable(False, False)
+        self.geometry("900x650")
+        self.resizable(True, True)
+        self.state("zoomed")
 
         self.client_socket = None
-        self.server_user = None
-        self.server_pass = None
-        self.server_key = None
-        self.is_connected = False  # for controlling the alert loop
+        self.is_connected = False
 
-        # GUI setup
         self.create_widgets()
         self.configure_tags()
 
-        # Connect to server and get login details
-        threading.Thread(target=self.show_login_pair, daemon=True).start()
-
-    # ---------------- GUI Setup ---------------- #
     def create_widgets(self):
         tk.Label(self, text="Client Login", font=("Arial", 16, "bold")).pack(pady=10)
 
-        # Username
         tk.Label(self, text="Username").pack()
         self.entry_username = tk.Entry(self, width=30)
         self.entry_username.pack(pady=5)
+        self.entry_username.bind("<Return>", lambda e: self.entry_password.focus())
 
-        # Password
         tk.Label(self, text="Password").pack()
         self.entry_password = tk.Entry(self, show="*", width=30)
         self.entry_password.pack(pady=5)
 
-        # Key
-        tk.Label(self, text="Decryption Key").pack()
+        tk.Label(self, text="Encryption Key (paste here after pressing Enter)").pack()
         self.entry_key = tk.Entry(self, width=50)
         self.entry_key.pack(pady=5)
 
-        # Login + Kill buttons
         button_frame = tk.Frame(self)
         button_frame.pack(pady=10)
 
-        self.btn_login = tk.Button(button_frame, text="Login", command=self.attempt_login)
-        self.btn_login.pack(side=tk.LEFT, padx=10)
+        self.btn_enter = tk.Button(button_frame, text="Enter", command=self.enter_credentials)
+        self.btn_enter.pack(side="left", padx=10)
 
-        self.btn_kill = tk.Button(
-            button_frame, text="Kill Connection", command=self.kill_connection, state='disabled', bg="#cc0000", fg="white"
-        )
-        self.btn_kill.pack(side=tk.LEFT, padx=10)
+        self.btn_login = tk.Button(button_frame, text="Login", command=self.attempt_login, state="disabled")
+        self.btn_login.pack(side="left", padx=10)
 
-        # Console
+        self.btn_kill = tk.Button(button_frame, text="Kill Connection", command=self.kill_connection,
+                                  state="disabled", bg="#cc0000", fg="white")
+        self.btn_kill.pack(side="left", padx=10)
+
         tk.Label(self, text="Client Console").pack(pady=5)
         self.console = scrolledtext.ScrolledText(self, width=90, height=20, state='disabled', wrap=tk.WORD)
         self.console.pack(pady=5)
 
-    # ---------------- Console Styling ---------------- #
     def configure_tags(self):
         self.console.tag_config("high", foreground="red", font=("Arial", 10, "bold"))
         self.console.tag_config("medium", foreground="orange", font=("Arial", 10))
@@ -79,106 +68,104 @@ class GUIClient(tk.Tk):
         self.console.configure(state='disabled')
         self.console.yview(tk.END)
 
-    # ---------------- Server Communication ---------------- #
-    def show_login_pair(self):
-        """
-        Connects to server, receives LOGIN_PAIR, prints them in console
-        for user to manually type in fields.
-        """
-        try:
-            self.client_socket = connect_to_server()
-            self.append("Connected to server successfully.", "info")
-
-            # Receive server credentials and key
-            self.server_user, self.server_pass, self.server_key = receive_login_pair(self.client_socket)
-
-            # Show only in console (not in input boxes)
-            self.append("\n--- SERVER CREDENTIALS ---", "info")
-            self.append(f"Username: {self.server_user}", "info")
-            self.append(f"Password: {self.server_pass}", "info")
-            self.append(f"Encryption Key: {self.server_key}", "info")
-            self.append("-----------------------------\n", "info")
-
-            self.append("Please manually enter the above credentials and key into the fields.", "info")
-
-        except Exception as e:
-            self.append(f"Error connecting or receiving login pair: {e}", "error")
-
-    def attempt_login(self):
-        """
-        Triggered when user clicks Login. Runs login logic.
-        """
+    # -------- First button: send credentials, receive key --------
+    def enter_credentials(self):
         username = self.entry_username.get().strip()
         password = self.entry_password.get().strip()
-        key_str = self.entry_key.get().strip()
-
-        if not username or not password or not key_str:
-            messagebox.showwarning("Input Error", "All fields are required!")
+        if not username or not password:
+            messagebox.showwarning("Input Error", "Username and password required!")
             return
+        threading.Thread(target=self._enter_thread, args=(username, password), daemon=True).start()
 
-        # Threaded login (avoid GUI freeze)
-        threading.Thread(target=self.backend_login, args=(username, password, key_str), daemon=True).start()
-
-    def backend_login(self, username, password, key_str):
-        """
-        Backend login thread.
-        """
+    def _enter_thread(self, username, password):
         try:
-            key_bytes = key_str.encode()  # use string as-is
-        except Exception:
-            self.append("Invalid key format! Make sure you copied it exactly from the server.", "error")
-            return
+            # connect to server
+            self.client_socket = connect_to_server()
+            self.append("Connected to server.", "info")
 
-        try:
-            success, msg = login(self.client_socket, username, password, key_bytes)
-            self.append(msg, "info" if success else "error")
+            success, payload = enter_credentials(self.client_socket, username, password)
+            if not success:
+                self.append(payload, "error")
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                self.client_socket = None
+                return
 
-            if success:
-                # Disable login fields
-                self.entry_username.config(state='disabled')
-                self.entry_password.config(state='disabled')
-                self.entry_key.config(state='disabled')
-                self.btn_login.config(state='disabled')
+            # payload is the key
+            key_str = payload
+            self.append("Encryption key received from server. Copy and paste it in the Encryption Field to continue.", "info")
+            self.append(f"🔑 {key_str}", "info")
 
-                # Enable kill button
-                self.btn_kill.config(state='normal')
+            # ✅ Manual entry only: do NOT auto-fill the key field
+            # self.entry_key.delete(0, tk.END)
+            # self.entry_key.insert(0, key_str)
 
-                self.append("\nLogin successful. Receiving live alerts...\n", "info")
-                self.is_connected = True
+            # Enable login button (user will paste key manually)
+            self.btn_login.config(state="normal")
 
-                # Start continuous alert listener
-                threading.Thread(target=self.listen_for_alerts, daemon=True).start()
         except Exception as e:
-            self.append(f"Login error: {e}", "error")
+            self.append(f"Error during Enter: {e}", "error")
+            if self.client_socket:
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                self.client_socket = None
 
-    def listen_for_alerts(self):
-        """
-        Keeps receiving alerts until the user kills the connection.
-        """
-        while self.is_connected:
-            try:
-                receive_alerts(self.client_socket, self)
-            except Exception as e:
-                self.append(f"Error receiving alerts: {e}", "error")
-                break
+    # -------- Second button: confirm key and enable encrypted comm --------
+    def attempt_login(self):
+        key_str = self.entry_key.get().strip()
+        if not key_str:
+            messagebox.showwarning("Input Error", "Encryption key required! Paste the key shown above.")
+            return
+        threading.Thread(target=self._confirm_thread, args=(key_str,), daemon=True).start()
+
+    def _confirm_thread(self, key_str):
+        if not self.client_socket:
+            self.append("No active connection to server. Press Enter first.", "error")
+            return
+
+        success, msg = confirm_key_and_activate(self.client_socket, key_str)
+        if not success:
+            self.append(msg, "error")
+            return
+
+        # success: msg is welcome text (decrypted)
+        self.append(msg, "info")
+
+        # disable inputs and enable kill + alerts
+        self.entry_username.config(state="disabled")
+        self.entry_password.config(state="disabled")
+        self.entry_key.config(state="disabled")
+        self.btn_login.config(state="disabled")
+        self.btn_enter.config(state="disabled")
+        self.btn_kill.config(state="normal")
+        self.is_connected = True
+
+        # Display alert generation start
+        self.append("Generating alerts and waiting for real-time updates from server...", "info")
+
+        # Start alert listener (encrypted)
+        threading.Thread(target=receive_alerts, args=(self.client_socket, self), daemon=True).start()
 
     def kill_connection(self):
-        """
-        Disconnect from server and stop receiving alerts.
-        """
+        self.is_connected = False
         try:
-            self.is_connected = False
             if self.client_socket:
                 self.client_socket.close()
                 self.client_socket = None
-
-            self.append("\nConnection terminated by user.\n", "error")
-            self.btn_kill.config(state='disabled')
+            self.append("Connection terminated by user.", "error")
+            self.btn_kill.config(state="disabled")
         except Exception as e:
             self.append(f"Error closing connection: {e}", "error")
 
 
-# ---------------- Launcher ---------------- #
 def run_gui():
     app = GUIClient()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    run_gui()

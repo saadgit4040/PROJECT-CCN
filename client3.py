@@ -1,65 +1,75 @@
 """
-Main Client Backend
-Handles connection, login, encryption, alert handling
+Client backend: two-step login flow to match GUI
+1) enter_credentials(): connect + send USER:username:password (plain)
+   -> waits for AUTH_SUCCESS and then plain ENCRYPTION_KEY:<key>
+   -> returns (success, msg_or_key)
+2) confirm_key(): user provides key; client sets cipher and sends "CIPHER_OK" (plain)
+   -> then expects encrypted welcome and starts receiving alerts
 """
 
-import threading
+import socket
+import json
 from modules import encryption as _encryption
 from modules.message_handler import send_message, receive_message
 from CLIENT.modules_gui import gui_client
-import socket
-import json
 
 HOST = '127.0.0.1'
 PORT = 8888
 
-# ---------------- Backend Functions ---------------- #
-
 def connect_to_server(host=HOST, port=PORT):
-    """Connect to the server and return the client socket."""
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((host, port))
-    return client_socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((host, port))
+    return s
 
-def receive_login_pair(client_socket):
+def enter_credentials(client_socket, username, password):
     """
-    Receives LOGIN_PAIR from server.
-    Returns (server_user, server_pass, server_key) or raises Exception.
-    """
-    message = receive_message(client_socket, use_cipher=False)
-    if not message or not message.startswith("LOGIN_PAIR:"):
-        raise Exception("Failed to receive login pair from server.")
-    parts = message.split(":")
-    if len(parts) < 5:
-        raise Exception("Invalid login packet format from server.")
-    _, server_user, server_pass, _, server_key = parts
-    return server_user, server_pass, server_key
-
-def login(client_socket, username, password, key_bytes):
-    """
-    Handles login and encryption setup.
-    Returns (success: bool, message: str)
+    Step 1:
+    Send credentials in plain ("USER:username:password").
+    On AUTH_SUCCESS server will send plain "ENCRYPTION_KEY:<keystring>".
+    Returns: (True, keystring) on success OR (False, error_message)
     """
     try:
-        # Send credentials to server
-        send_message(client_socket, username, use_cipher=False)
-        send_message(client_socket, password, use_cipher=False)
+        send_message(client_socket, f"USER:{username}:{password}", use_cipher=False)
+        resp = receive_message(client_socket, use_cipher=False)
+        if resp != "AUTH_SUCCESS":
+            return False, "Authentication failed. Check username/password."
 
-        response = receive_message(client_socket, use_cipher=False)
-        if response and response.startswith("AUTH_SUCCESS"):
-            if _encryption.set_encryption_key(key_bytes):
-                return True, "Authentication successful!"
-            else:
-                return False, "Invalid decryption key."
-        else:
-            return False, "Authentication failed."
+        # receive encryption key plain
+        key_msg = receive_message(client_socket, use_cipher=False)
+        if not key_msg or not key_msg.startswith("ENCRYPTION_KEY:"):
+            return False, "Did not receive encryption key from server."
+        key_str = key_msg.split(":", 1)[1]
+        return True, key_str
+
     except Exception as e:
-        return False, f"Login error: {e}"
+        return False, f"enter_credentials error: {e}"
+
+def confirm_key_and_activate(client_socket, key_str):
+    """
+    Step 2:
+    User pasted key_str. Set local cipher, send CIPHER_OK to server (plain).
+    Then wait for encrypted welcome (server will now use encryption).
+    Returns (True, welcome_message) or (False, error)
+    """
+    try:
+        # Validate key locally by attempting to set it
+        key_bytes = key_str.encode()
+        if not _encryption.set_encryption_key(key_bytes):
+            return False, "Invalid key format locally."
+
+        # Let server know we set the cipher
+        send_message(client_socket, "CIPHER_OK", use_cipher=False)
+
+        # Now receive an encrypted welcome (use_cipher=True)
+        welcome = receive_message(client_socket, use_cipher=True)
+        if not welcome:
+            return False, "Did not receive encrypted welcome from server."
+        return True, welcome
+
+    except Exception as e:
+        return False, f"confirm_key error: {e}"
 
 def handle_alert(alert_data):
-    """
-    Parse alert JSON and return alert ID, priority, and formatted message.
-    """
     try:
         alert = json.loads(alert_data)
         msg = f"[{alert['priority']}] {alert['message']} (Time: {alert['timestamp']})"
@@ -69,29 +79,32 @@ def handle_alert(alert_data):
 
 def receive_alerts(client_socket, gui_console):
     """
-    Loop to receive alerts and send ACKs.
-    gui_console must have an append(msg, tag) method.
+    Loop to receive (encrypted) alerts and display to gui_console via gui_console.append(msg, tag)
     """
     while True:
-        message = receive_message(client_socket)
+        message = receive_message(client_socket, use_cipher=True)
         if not message:
             gui_console.append("Connection lost!", "error")
             break
         if message == "SERVER_SHUTDOWN":
-            gui_console.append("Server shutting down. Disconnecting...", "info")
+            gui_console.append("Server shutting down.", "info")
             break
-        elif message == "HEARTBEAT_OK":
-            continue
-        elif message.startswith("ALERT:"):
+        if message.startswith("ALERT:"):
             alert_id, priority, alert_msg = handle_alert(message.split(":", 1)[1])
             tag = "high" if priority.upper() == "HIGH" else "medium" if priority.upper() == "MEDIUM" else "low"
             gui_console.append(alert_msg, tag)
             if alert_id:
-                send_message(client_socket, f"ACK:{alert_id}")
+                send_message(client_socket, f"ACK:{alert_id}", use_cipher=True)
         else:
             gui_console.append(f"Server: {message}", "info")
 
-# ---------------- GUI Launcher ---------------- #
-
+# ----------------- Launcher ----------------- #
 if __name__ == "__main__":
-    gui_client.run_gui()
+    print("🚀 Launching Client GUI...")
+    try:
+        gui_client. run_gui()
+    except Exception as e:
+        print(f"❌ Failed to open GUI: {e}")
+
+
+   

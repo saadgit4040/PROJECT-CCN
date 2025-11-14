@@ -1,9 +1,12 @@
 """
-Dictionary-based client authentication (LOGIN_PAIR sent in plain text)
+Dictionary-based client authentication (plain-text exchange)
+Server expects plain messages: "USER:username:password"
+Sends plain "AUTH_SUCCESS" or "AUTH_FAIL" and then (on success)
+sends the encryption key in plain: "ENCRYPTION_KEY:<key_string>"
 """
 
 from modules.logger import log_event
-from modules.message_handler import send_message, receive_message
+from modules.message_handler import receive_message, send_message
 
 # Predefined username/password dictionary
 USER_DICT = {
@@ -15,36 +18,32 @@ USER_DICT = {
 def authenticate_client(client_socket, address, encryption_key):
     """
     Authenticate client using username/password.
-    Encryption key is sent along in LOGIN_PAIR but actual cipher
-    activation is done manually by client after successful login.
+    Returns True on success. Sends AUTH_SUCCESS/AUTH_FAIL (plain).
     """
     try:
-        # Receive username from client
-        client_username = receive_message(client_socket, use_cipher=False)
-        if not client_username:
-            log_event("AUTH", f"No username received from {address}")
+        # Read plain message from client
+        msg = receive_message(client_socket, use_cipher=False)
+        if not msg or not msg.startswith("USER:"):
+            log_event("AUTH", f"Invalid auth format from {address}: {msg}")
+            send_message(client_socket, "AUTH_FAIL", use_cipher=False)
             return False
 
-        # Receive password from client
-        client_password = receive_message(client_socket, use_cipher=False)
-        if not client_password:
-            log_event("AUTH", f"No password received from {address}")
-            return False
+        _, username, password = msg.split(":", 2)
+        log_event("AUTH", f"Received login attempt from {address} ({username})")
 
-        # Verify credentials
-        if client_username in USER_DICT and client_password == USER_DICT[client_username]:
-            # Send AUTH_SUCCESS (no need to send key again, client already has it)
+        if username in USER_DICT and USER_DICT[username] == password:
             send_message(client_socket, "AUTH_SUCCESS", use_cipher=False)
-            log_event("AUTH", f"Client {address} logged in successfully as {client_username}")
+            log_event("AUTH", f"Authentication success for {address} ({username})")
             return True
         else:
-            send_message(client_socket, "AUTH_FAILED", use_cipher=False)
-            log_event(
-                "AUTH",
-                f"Client {address} failed login. Entered: {client_username}/{client_password}"
-            )
+            send_message(client_socket, "AUTH_FAIL", use_cipher=False)
+            log_event("AUTH", f"Authentication failed for {address} ({username})")
             return False
 
     except Exception as e:
-        log_event("ERROR", f"Authentication error with {address}: {e}")
+        log_event("ERROR", f"Authentication error for {address}: {e}")
+        try:
+            send_message(client_socket, "AUTH_FAIL", use_cipher=False)
+        except Exception:
+            pass
         return False

@@ -5,7 +5,6 @@ CCN Project - Main Server
 import threading
 import time
 from modules.logger import log_event
-from modules.encryption import get_encryption_key
 from modules.server_connection import start_server
 from modules.alert_generator import generate_alert
 from modules.broadcaster import broadcast_alert
@@ -29,13 +28,7 @@ def alert_generator():
 
 if __name__ == "__main__":
     try:
-        encryption_key = get_encryption_key()
         print(f"{'='*50}\nSERVER STARTING...\n{'='*50}")
-        print("Encryption Key (share with clients exactly):")
-        print(f"  As bytes: {repr(encryption_key)}")
-        print(f"  As string: {encryption_key.decode()}")
-        print(f"{'='*50}\n")
-
         server_socket = start_server(
             HOST,
             PORT,
@@ -43,8 +36,7 @@ if __name__ == "__main__":
             active_clients,
             lock,
             server_running,
-            alert_generator,
-            encryption_key
+            alert_generator
         )
 
     except KeyboardInterrupt:

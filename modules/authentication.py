@@ -10,12 +10,12 @@ from modules.message_handler import receive_message, send_message
 
 # Predefined username/password dictionary
 USER_DICT = {
-    "admin": "admin123",
     "user1": "pass123",
-    "user2": "pass456"
+    "user2": "pass456",
+    "user3": "pass789"
 }
 
-def authenticate_client(client_socket, address, encryption_key):
+def authenticate_client(client_socket, address):
     """
     Authenticate client using username/password.
     Returns True on success. Sends AUTH_SUCCESS/AUTH_FAIL (plain).

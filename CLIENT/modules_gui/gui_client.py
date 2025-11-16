@@ -8,7 +8,9 @@ from tkinter import scrolledtext, messagebox
 import threading
 from client3 import connect_to_server, enter_credentials, confirm_key_and_activate, receive_alerts
 
+
 class GUIClient(tk.Tk):
+
     def __init__(self):
         super().__init__()
         self.title("Real-Time Alert Monitoring System - Client")
@@ -21,6 +23,7 @@ class GUIClient(tk.Tk):
 
         self.create_widgets()
         self.configure_tags()
+        self.append("Please enter Username and Password and click ENTER to connect.", "info")
 
     def create_widgets(self):
         tk.Label(self, text="Client Login", font=("Arial", 16, "bold")).pack(pady=10)
@@ -79,8 +82,13 @@ class GUIClient(tk.Tk):
 
     def _enter_thread(self, username, password):
         try:
-            # connect to server
-            self.client_socket = connect_to_server()
+            try:
+                self.client_socket = connect_to_server()
+            except ConnectionRefusedError:
+                self.append("Cannot connect: Server is not running. Please start the server first.", "error")
+                return
+            
+            
             self.append("Connected to server.", "info")
 
             success, payload = enter_credentials(self.client_socket, username, password)
@@ -98,12 +106,11 @@ class GUIClient(tk.Tk):
             self.append("Encryption key received from server. Copy and paste it in the Encryption Field to continue.", "info")
             self.append(f"🔑 {key_str}", "info")
 
-            # ✅ Manual entry only: do NOT auto-fill the key field
-            # self.entry_key.delete(0, tk.END)
-            # self.entry_key.insert(0, key_str)
-
             # Enable login button (user will paste key manually)
             self.btn_login.config(state="normal")
+
+            # Disable Enter button so it can't be pressed again
+            self.btn_enter.config(state="disabled")
 
         except Exception as e:
             self.append(f"Error during Enter: {e}", "error")
@@ -157,9 +164,21 @@ class GUIClient(tk.Tk):
                 self.client_socket.close()
                 self.client_socket = None
             self.append("Connection terminated by user.", "error")
+
+        # ✅ Reset buttons
             self.btn_kill.config(state="disabled")
+            self.btn_enter.config(state="normal")  # allow user to press Enter again
+            self.btn_login.config(state="disabled")  # login is disabled until Enter pressed again
+
+            # ✅ Reset input fields
+            self.entry_username.config(state="normal")
+            self.entry_password.config(state="normal")
+            self.entry_key.config(state="normal")
+            self.entry_key.delete(0, tk.END)
+
         except Exception as e:
             self.append(f"Error closing connection: {e}", "error")
+
 
 
 def run_gui():

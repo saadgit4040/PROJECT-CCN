@@ -1,4 +1,5 @@
 """
+NEW:
 Client backend: two-step login flow to match GUI
 1) enter_credentials(): connect + send USER:username:password (plain)
    -> waits for AUTH_SUCCESS and then plain ENCRYPTION_KEY:<key>
